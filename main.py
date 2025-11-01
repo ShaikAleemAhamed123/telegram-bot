@@ -1,8 +1,9 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
 
 app = FastAPI()
 
-@app.get("/hello")
-async def helloCommandHandler():
-    return {"message": "Hello, from FastAPI!"}
+@app.post("/hello")
+async def webhook(request: Request):
+    data = await request.json()
+    print(data)
+    return "Hello There, from fastAPI"
