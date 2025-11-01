@@ -8,4 +8,7 @@ dependencies = [
     "fastapi[standard]>=0.120.4",
     "httpx>=0.28.1",
     "python-telegram-bot==22.5",
+    "pytube>=15.0.0",
+    "pytube3>=9.6.4",
+    "pytubefix>=10.1.1",
 ]
