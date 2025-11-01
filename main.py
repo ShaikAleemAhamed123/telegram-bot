@@ -15,7 +15,7 @@ async def webhook(request : Request):
 
     if chat_id:
         reply_text = f"You Said : {text}"
-        async with httpx.AsyncClient as client:
+        async with httpx.AsyncClient() as client:
             await client.post(
                 f"{TELEGRAM_API}/sendMessage",
                 json={"chat_id":chat_id, "text":reply_text}
