@@ -1,60 +1,243 @@
 from fastapi import FastAPI, Request, BackgroundTasks
 from pytubefix import YouTube
-import httpx, os
+import httpx
+import os
 import traceback
-import aiofiles
-from httpx import AsyncByteStream
+import subprocess
+from pathlib import Path
 
 app = FastAPI()
 BOT_TOKEN = "8577277099:AAH-stXCaWNhNijfgIq0wfAsCcuyNlROBrQ"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+MAX_SIZE_MB = 2000  # Telegram allows up to 2GB with local API
+
+def split_video(file_path: str, chunk_size_mb: int = 45) -> list:
+    """Split video into chunks using ffmpeg"""
+    try:
+        chunk_size_bytes = chunk_size_mb * 1024 * 1024
+        file_size = os.path.getsize(file_path)
+        
+        if file_size <= chunk_size_bytes:
+            return [file_path]
+
+        base, ext = os.path.splitext(file_path)
+        output_pattern = f"{base}_part%03d{ext}" 
+        duration_cmd = [
+            "ffprobe", "-v", "error", "-show_entries",
+            "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path
+        ]
+        
+        duration = float(subprocess.check_output(duration_cmd).decode().strip())
+        num_chunks = int(file_size / chunk_size_bytes) + 1
+        chunk_duration = duration / num_chunks
+        
+        # Split using ffmpeg
+        cmd = [
+            "ffmpeg", "-i", file_path, "-c", "copy",
+            "-map", "0", "-f", "segment",
+            "-segment_time", str(chunk_duration),
+            "-reset_timestamps", "1",
+            output_pattern
+        ]
+        
+        subprocess.run(cmd, check=True, capture_output=True)
+        
+        # Find all generated chunks
+        base_dir = os.path.dirname(file_path)
+        base_name = os.path.basename(file_path)
+        chunks = sorted([
+            os.path.join(base_dir, f) 
+            for f in os.listdir(base_dir) 
+            if f.startswith(f"{base_name}_part")
+        ])
+        
+        return chunks
+        
+    except Exception as e:
+        print(f"❌ Error splitting video: {e}")
+        return [file_path]
+
+async def send_large_file(chat_id: int, file_path: str, caption: str = ""):
+    """Send file using document endpoint - splits if needed"""
+    try:
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        
+        # If file is too large for direct upload, split it
+        if file_size_mb > 50:
+            print(f"📦 File is {file_size_mb:.1f} MB. Splitting into parts...")
+            await send_message(chat_id, f"📦 File is {file_size_mb:.1f} MB. Splitting into parts...")
+            
+            chunks = split_video(file_path, chunk_size_mb=45)
+            
+            if len(chunks) == 1:  # Split failed, try direct upload anyway
+                print("⚠️ Split failed, attempting direct upload...")
+                return await upload_file(chat_id, file_path, caption)
+            
+            # Upload each chunk
+            for idx, chunk in enumerate(chunks, 1):
+                chunk_caption = f"{caption} - Part {idx}/{len(chunks)}" if len(chunks) > 1 else caption
+                await send_message(chat_id, f"📤 Uploading part {idx}/{len(chunks)}...")
+                
+                success = await upload_file(chat_id, chunk, chunk_caption)
+                
+                # Clean up chunk immediately after upload
+                if os.path.exists(chunk) and chunk != file_path:
+                    os.remove(chunk)
+                    print(f"🗑️ Deleted chunk: {os.path.basename(chunk)}")
+                
+                if not success:
+                    return False
+            
+            return True
+        else:
+            return await upload_file(chat_id, file_path, caption)
+                    
+    except Exception as e:
+        print(f"❌ Error in send_large_file: {e}")
+        print(traceback.format_exc())
+        return False
+
+async def upload_file(chat_id: int, file_path: str, caption: str = ""):
+    """Upload a single file to Telegram"""
+    try:
+        timeout = httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=30.0)
+        
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            with open(file_path, "rb") as file:
+                files = {"document": (os.path.basename(file_path), file, "application/octet-stream")}
+                data = {"chat_id": chat_id}
+                
+                if caption:
+                    data["caption"] = caption[:1024]
+
+                response = await client.post(
+                    f"{TELEGRAM_API}/sendDocument",
+                    data=data,
+                    files=files
+                )
+                file_upload_res = response.json()
+                
+                if response.status_code == 200:
+                    print(f"✅ Sent file: {os.path.basename(file_path)}")
+                    return True
+                else:
+                    print(f"❌ Upload failed ({response.status_code}): {response.text}")
+                    return False
+                    
+    except Exception as e:
+        print(f"❌ Error uploading file: {e}")
+        print(traceback.format_exc())
+        return False
 
 async def process_video(chat_id: int, url: str):
+    file_path = None
+    chunks = []
+    
     try:
         yt = YouTube(url, use_oauth=True, allow_oauth_cache=True)
         print(f"🎬 Title: {yt.title}")
+        
+        # Get highest resolution stream
         ys = yt.streams.get_highest_resolution()
-
-        if ys:
-            file_path = ys.download()
-            print(f"✅ Downloaded: {file_path}")
-
-            if file_path:
-                if os.path.getsize(file_path) > 49 * 1024 * 1024:
-                    print("Video > 50 MB...")
-                    os.remove(file_path)
-                    return {"ok": False, "error": "Unable to send large file to chat"}
-
-                timeout = httpx.Timeout(600.0)
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    with open(file_path, "rb") as video_file:
-                        files = {"video": ("video.mp4", video_file, "video/mp4")}
-                        data = {"chat_id": chat_id}
-                        response = await client.post(f"{TELEGRAM_API}/sendVideo", data=data, files=files)
-                        print(f"📨 Telegram response: {response.text}")
-
-                os.remove(file_path)
-                print("🗑️ Deleted downloaded file.")
+        if not ys:
+            await send_message(chat_id, "❌ No streams available for this video")
+            return
+        
+        # Download video
+        file_path = ys.download()
+        print(f"✅ Downloaded: {file_path}")
+        
+        if not file_path or not os.path.exists(file_path):
+            await send_message(chat_id, "❌ Download failed")
+            return
+        
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        print(f"📦 File size: {file_size_mb:.2f} MB")
+        
+        # Handle based on file size
+        if file_size_mb <= 50:
+            # Send as video (with thumbnail support)
+            await send_message(chat_id, f"📤 Uploading video ({file_size_mb:.1f} MB)...")
+            timeout = httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=30.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                with open(file_path, "rb") as video_file:
+                    files = {"video": (os.path.basename(file_path), video_file, "video/mp4")}
+                    data = {"chat_id": chat_id, "caption": yt.title[:1024]}
+                    response = await client.post(f"{TELEGRAM_API}/sendVideo", data=data, files=files)
+                    print(f"📨 Response: {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        await send_message(chat_id, "✅ Video uploaded successfully!")
+                    else:
+                        await send_message(chat_id, f"❌ Upload failed: {response.status_code}")
+        
+        else:
+            # Files > 50MB - will be automatically split if needed
+            await send_message(chat_id, f"📤 Uploading large file ({file_size_mb:.1f} MB)...")
+            success = await send_large_file(chat_id, file_path, yt.title)
+            
+            if success:
+                await send_message(chat_id, "✅ All parts uploaded successfully!")
             else:
-                print("Downloaded file path not found")
-
+                await send_message(chat_id, "❌ Failed to upload file")
+    
     except Exception as e:
         print(f"❌ Error processing video: {e}")
         print(traceback.format_exc())
+        await send_message(chat_id, f"❌ Error: {str(e)[:200]}")
+    
+    finally:
+        # Cleanup - only remove main file, chunks are cleaned up individually
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+            print("🗑️ Deleted original file")
+
+async def send_message(chat_id: int, text: str):
+    """Helper to send text messages"""
+    try:
+        timeout = httpx.Timeout(30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{TELEGRAM_API}/sendMessage",
+                data={"chat_id": chat_id, "text": text}
+            )
+            if response.status_code != 200:
+                print(f"❌ Message send failed: {response.text}")
+            return response.status_code == 200
+    except Exception as e:
+        print(f"❌ Error sending message: {e}")
+        print(traceback.format_exc())
+        return False
 
 @app.post("/hello")
 async def download_video(request: Request, background_tasks: BackgroundTasks):
-    data = await request.json()
-    print("Update received:", data)
-
-    message = data.get("message", {})
-    chat_id = message.get("chat", {}).get("id")
-    url = message.get("text", "")
-
-    if chat_id and url:
-        async with httpx.AsyncClient() as client:
-            await client.post(f"{TELEGRAM_API}/sendMessage", data = {"chat_id":chat_id, "text":"Downloading your Video..."})
+    try:
+        data = await request.json()
+        print("📩 Update received:", data)
+        
+        message = data.get("message", {})
+        chat_id = message.get("chat", {}).get("id")
+        url = message.get("text", "")
+        
+        if not chat_id or not url:
+            return {"ok": False, "error": "Missing chat_id or url"}
+        
+        # Validate URL
+        if not url.startswith(("http://", "https://")):
+            await send_message(chat_id, "❌ Please send a valid YouTube URL")
+            return {"ok": True}
+        
+        await send_message(chat_id, "⏳ Downloading your video...")
         background_tasks.add_task(process_video, chat_id, url)
+        
+        return {"ok": True}
+    
+    except Exception as e:
+        print(f"❌ Error in webhook: {e}")
+        print(traceback.format_exc())
+        return {"ok": False, "error": str(e)}
 
-    # ✅ Respond immediately to Telegram
-    return {"ok": True}
+@app.get("/")
+async def root():
+    return {"status": "Bot is running"}
