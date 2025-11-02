@@ -5,8 +5,16 @@ import os
 import traceback
 import subprocess
 import logging
+from pathlib import Path
 from typing import Set, Dict, List, Union
 import json
+
+
+app = FastAPI()
+BOT_TOKEN = "8577277099:AAH-stXCaWNhNijfgIq0wfAsCcuyNlROBrQ"
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+MAX_SIZE_MB = 2000  # Telegram allows up to 2GB with local API
+CACHE_FILE = "cache.json"
 
 # Configure logging
 logging.basicConfig(
@@ -16,17 +24,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
-BOT_TOKEN = "8577277099:AAH-stXCaWNhNijfgIq0wfAsCcuyNlROBrQ"
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-MAX_SIZE_MB = 2000  # Telegram allows up to 2GB with local API
+
+def load_cache():
+    """Load cache from JSON file"""
+    global uploaded_videos
+    try:
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, "r") as cache:
+                uploaded_videos = json.load(cache)
+                logger.info(f"Cache loaded successfully - {len(uploaded_videos)} chats cached")
+        else:
+            logger.info("No cache file found. Starting with empty cache.")
+            uploaded_videos = {}
+    except json.JSONDecodeError as e:
+        logger.error(f"Cache file is corrupted: {e}. Starting with empty cache.")
+        uploaded_videos = {}
+    except Exception as e:
+        logger.error(f"Error loading cache: {e}", exc_info=True)
+        uploaded_videos = {}
+
 
 # Track processed updates to prevent duplicates
 processed_updates: Set[int] = set()
 
 # Cache uploaded videos: {youtube_url: file_id or [file_id1, file_id2, ...]}
-# uploaded_videos: Dict[str, Union[str, List[str]]] = {}
-uploaded_videos : Dict[str, Dict[str, Union[str, List[str]]]] = {}
+uploaded_videos: Dict[str, Union[str, List[str]]] = {}
+
+# Load cache on startup
+load_cache()
+
+async def persist_cache():
+    """Save cache to JSON file"""
+    try:
+        with open(CACHE_FILE, "w") as cache:
+            json.dump(uploaded_videos, cache, indent=2)
+        logger.debug("Cache persisted successfully")
+    except Exception as e:
+        logger.error(f"Error persisting cache: {e}", exc_info=True)
+
+
 
 def split_video(file_path: str, chunk_size_mb: int = 45) -> list:
     """Split video into chunks using ffmpeg"""
@@ -106,8 +142,13 @@ async def send_large_file(chat_id: int, file_path: str, caption: str = "", url: 
     try:
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         file_ids = []  # Store file_ids for caching
+        chat_id_str = str(chat_id)
         
         logger.info(f"Processing large file upload - Size: {file_size_mb:.2f}MB, Chat ID: {chat_id}")
+        
+        # Initialize chat cache if not exists
+        if chat_id_str not in uploaded_videos:
+            uploaded_videos[chat_id_str] = {}
         
         # If file is too large for direct upload, split it
         if file_size_mb > 50:
@@ -120,7 +161,8 @@ async def send_large_file(chat_id: int, file_path: str, caption: str = "", url: 
                 logger.warning("Video splitting failed or returned single chunk. Attempting direct upload.")
                 file_id = await upload_file(chat_id, file_path, caption)
                 if file_id and url:
-                    uploaded_videos[url] = file_id
+                    uploaded_videos[chat_id_str][url] = file_id
+                    await persist_cache()
                     logger.info(f"Cached file_id for URL: {url[:50]}...")
                 return file_id is not None
             
@@ -151,7 +193,8 @@ async def send_large_file(chat_id: int, file_path: str, caption: str = "", url: 
             
             # Cache all file_ids
             if url and file_ids:
-                uploaded_videos[url] = file_ids
+                uploaded_videos[chat_id_str][url] = file_ids
+                await persist_cache()
                 logger.info(f"Successfully cached {len(file_ids)} file_ids for URL: {url[:50]}...")
             
             logger.info(f"All {len(chunks)} chunks uploaded successfully")
@@ -160,7 +203,8 @@ async def send_large_file(chat_id: int, file_path: str, caption: str = "", url: 
             logger.info(f"File size within 50MB limit. Uploading directly.")
             file_id = await upload_file(chat_id, file_path, caption)
             if file_id and url:
-                uploaded_videos[url] = file_id
+                uploaded_videos[chat_id_str][url] = file_id
+                await persist_cache()
                 logger.info(f"Cached file_id for URL: {url[:50]}...")
             return file_id is not None
                     
@@ -263,13 +307,19 @@ async def process_video(chat_id: int, url: str):
     try:
         logger.info(f"Processing video request - Chat ID: {chat_id}, URL: {url[:50]}...")
         
-        # Check if video was already uploaded
-        if url in uploaded_videos:
-            logger.info(f"Video found in cache for URL: {url[:50]}...")
+        chat_id_str = str(chat_id)
+        
+        # Initialize chat cache if not exists
+        if chat_id_str not in uploaded_videos:
+            uploaded_videos[chat_id_str] = {}
+        
+        # Check if video was already uploaded for this chat
+        if url in uploaded_videos[chat_id_str]:
+            logger.info(f"Video found in cache for chat {chat_id}, URL: {url[:50]}...")
             yt = YouTube(url, use_oauth=True, allow_oauth_cache=True)
             await send_message(chat_id, f"♻️ Found '{yt.title}' in cache! Sending instantly...")
             
-            success = await send_cached_video(chat_id, uploaded_videos[url], yt.title)
+            success = await send_cached_video(chat_id, uploaded_videos[chat_id_str][url], yt.title)
             
             if success:
                 await send_message(chat_id, "✅ Video sent from cache (no download needed)!")
@@ -278,7 +328,8 @@ async def process_video(chat_id: int, url: str):
                 logger.warning(f"Cache send failed for URL: {url[:50]}... Will attempt re-download.")
                 await send_message(chat_id, "❌ Cache send failed, will re-download...")
                 # Remove from cache and try fresh download
-                del uploaded_videos[url]
+                del uploaded_videos[chat_id_str][url]
+                await persist_cache()
             
             if success:
                 return
@@ -329,8 +380,9 @@ async def process_video(chat_id: int, url: str):
                         result = response.json()
                         file_id = result.get("result", {}).get("video", {}).get("file_id")
                         if file_id:
-                            uploaded_videos[url] = file_id
-                            logger.info(f"Video file_id cached for future requests - URL: {url[:50]}...")
+                            uploaded_videos[chat_id_str][url] = file_id
+                            await persist_cache()
+                            logger.info(f"Video file_id cached for future requests - Chat: {chat_id}, URL: {url[:50]}...")
                         
                         await send_message(chat_id, "✅ Video uploaded successfully!")
                         logger.info(f"Video upload completed successfully for chat {chat_id}")
@@ -359,6 +411,9 @@ async def process_video(chat_id: int, url: str):
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
             logger.info(f"Cleaned up downloaded file: {os.path.basename(file_path)}")
+        
+        # Persist cache after each request completion
+        await persist_cache()
 
 async def send_message(chat_id: int, text: str):
     """Helper to send text messages"""
@@ -370,11 +425,12 @@ async def send_message(chat_id: int, text: str):
                 data={"chat_id": chat_id, "text": text}
             )
             if response.status_code != 200:
-                print(f"❌ Message send failed: {response.text}")
+                logger.error(f"Failed to send message to chat {chat_id} - Status: {response.status_code}, Response: {response.text}")
+            else:
+                logger.debug(f"Message sent to chat {chat_id}: {text[:50]}...")
             return response.status_code == 200
     except Exception as e:
-        print(f"❌ Error sending message: {e}")
-        print(traceback.format_exc())
+        logger.error(f"Error sending message to chat {chat_id}: {e}", exc_info=True)
         return False
 
 @app.post("/hello")
@@ -385,39 +441,53 @@ async def download_video(request: Request, background_tasks: BackgroundTasks):
         # Get update_id to prevent duplicate processing
         update_id = data.get("update_id")
         if update_id in processed_updates:
-            print(f"⚠️ Duplicate update {update_id} - skipping")
+            logger.warning(f"Duplicate update detected - Update ID: {update_id}. Skipping processing.")
             return {"ok": True, "message": "Already processing"}
         
-        print(f"📩 Update received: {data}")
+        logger.info(f"Received webhook update - Update ID: {update_id}")
+        logger.debug(f"Full update data: {data}")
         
         # Mark as processed
         if update_id:
             processed_updates.add(update_id)
             # Keep only last 1000 update IDs to prevent memory growth
             if len(processed_updates) > 1000:
-                processed_updates.pop()
+                removed_id = processed_updates.pop()
+                logger.debug(f"Removed old update ID from cache: {removed_id}")
         
         message = data.get("message", {})
         chat_id = message.get("chat", {}).get("id")
         url = message.get("text", "")
+        user_info = message.get("from", {})
+        
+        logger.info(f"Message from user - ID: {user_info.get('id')}, Username: {user_info.get('username', 'N/A')}, Chat ID: {chat_id}")
         
         if not chat_id or not url:
+            logger.error(f"Missing required fields - Chat ID: {chat_id}, URL: {url}")
             return {"ok": False, "error": "Missing chat_id or url"}
         
         # Validate URL
         if not url.startswith(("http://", "https://")) or ("youtube.com" not in url.lower() and "youtu.be" not in url.lower()):
+            logger.warning(f"Invalid YouTube URL received from chat {chat_id}: {url}")
             await send_message(chat_id, "❌ Please send a valid YouTube URL")
             return {"ok": True}
         
+        logger.info(f"Valid YouTube URL received - Adding to background task queue: {url[:50]}...")
         background_tasks.add_task(process_video, chat_id, url)
         
         return {"ok": True}
     
     except Exception as e:
-        print(f"❌ Error in webhook: {e}")
-        print(traceback.format_exc())
+        logger.error(f"Error in webhook handler: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
 
 @app.get("/")
 async def root():
-    return {"status": "Bot is running"}
+    logger.info("Health check endpoint accessed")
+    total_videos = sum(len(videos) for videos in uploaded_videos.values())
+    return {
+        "status": "Bot is running",
+        "cached_chats": len(uploaded_videos),
+        "total_cached_videos": total_videos,
+        "processed_updates": len(processed_updates)
+    }
