@@ -106,7 +106,7 @@ async def upload_file(chat_id: int, file_path: str, caption: str = ""):
         async with httpx.AsyncClient(timeout=timeout) as client:
             with open(file_path, "rb") as file:
                 files = {"document": (os.path.basename(file_path), file, "application/octet-stream")}
-                data = {"chat_id": chat_id}
+                data : dict = {"chat_id": chat_id}
                 
                 if caption:
                     data["caption"] = caption[:1024]
