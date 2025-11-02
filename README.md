@@ -3,6 +3,7 @@
 2. `clone` the repository(cd to it)
 3. Install `uv` in your machine
 4. In main.py file replace the `BOT_TOKEN` with your bot token
+5. delete all contents of `cache.json`
 5. create a venv with uv `uv venv .venv`
 6. activate the venv `source .venv/activate/bin`
 7. run `uv sync` to install all the required packages
