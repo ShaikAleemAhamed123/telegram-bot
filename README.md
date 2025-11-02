@@ -2,7 +2,7 @@
 1. Go to `BotFather` in telegram and create a new bot and get a bot token.
 2. `clone` the repository(cd to it)
 3. Install `uv` in your machine
-4. In main.py file replace the `BOT_TOKEN` with your bot token
+4. create `.env` file with contents `BOT_TOKEN=<your-bot-token-here>`
 5. delete all contents of `cache.json`
 6. create a venv with uv `uv venv .venv`
 7. activate the venv `source .venv/activate/bin`
