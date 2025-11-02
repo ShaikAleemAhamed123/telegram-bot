@@ -6,6 +6,7 @@ import traceback
 import subprocess
 import logging
 from typing import Set, Dict, List, Union
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -25,7 +26,7 @@ processed_updates: Set[int] = set()
 
 # Cache uploaded videos: {youtube_url: file_id or [file_id1, file_id2, ...]}
 # uploaded_videos: Dict[str, Union[str, List[str]]] = {}
-uploaded_vides : Dict[str, Dict[str, Union[str, List[str]]]] = {}
+uploaded_videos : Dict[str, Dict[str, Union[str, List[str]]]] = {}
 
 def split_video(file_path: str, chunk_size_mb: int = 45) -> list:
     """Split video into chunks using ffmpeg"""
