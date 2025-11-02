@@ -1,53 +1,60 @@
-from fastapi import FastAPI, Request
-import httpx
+from fastapi import FastAPI, Request, BackgroundTasks
 from pytubefix import YouTube
-import os
+import httpx, os
+import traceback
+import aiofiles
+from httpx import AsyncByteStream
 
 app = FastAPI()
-BOT_TOKEN = "8311901559:AAEJIF3HbxtkVnf8YjVYQ5IBgAfcPl9Axh4"
+BOT_TOKEN = "8577277099:AAH-stXCaWNhNijfgIq0wfAsCcuyNlROBrQ"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-@app.post("/greet")
-async def webhook(request : Request):
-    data = await request.json()
-    print("Update received:", data)
-    message = data.get("message",{})
-    chat_id = message.get("chat",{}).get("id")
-    text = message.get("text","")
+async def process_video(chat_id: int, url: str):
+    try:
+        yt = YouTube(url, use_oauth=True, allow_oauth_cache=True)
+        print(f"🎬 Title: {yt.title}")
+        ys = yt.streams.get_highest_resolution()
 
-    if chat_id:
-        reply_text = f"You Said : {text}"
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{TELEGRAM_API}/sendMessage",
-                json={"chat_id":chat_id, "text":reply_text}
-                
-            )
-    return {"ok": True}
+        if ys:
+            file_path = ys.download()
+            print(f"✅ Downloaded: {file_path}")
+
+            if file_path:
+                if os.path.getsize(file_path) > 49 * 1024 * 1024:
+                    print("Video > 50 MB...")
+                    os.remove(file_path)
+                    return {"ok": False, "error": "Unable to send large file to chat"}
+
+                timeout = httpx.Timeout(600.0)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    with open(file_path, "rb") as video_file:
+                        files = {"video": ("video.mp4", video_file, "video/mp4")}
+                        data = {"chat_id": chat_id}
+                        response = await client.post(f"{TELEGRAM_API}/sendVideo", data=data, files=files)
+                        print(f"📨 Telegram response: {response.text}")
+
+                os.remove(file_path)
+                print("🗑️ Deleted downloaded file.")
+            else:
+                print("Downloaded file path not found")
+
+    except Exception as e:
+        print(f"❌ Error processing video: {e}")
+        print(traceback.format_exc())
 
 @app.post("/hello")
-async def get_video_info(request: Request):
+async def download_video(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     print("Update received:", data)
 
-    message = data.get("message",{})
-    chat_id = message.get("chat",{}).get("id")
-    url = message.get("text","")
+    message = data.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    url = message.get("text", "")
 
-    yt = YouTube(url, use_po_token=True, client="WEB")
-    print(yt.title)
-
-    ys = yt.streams.get_highest_resolution()
-
-    if ys:
-        file_path = ys.download()
+    if chat_id and url:
         async with httpx.AsyncClient() as client:
-            if file_path:
-                with open(file_path,"rb") as video_file:
-                    files = {"video":video_file}
-                    data = {"chat_id":chat_id}
-                    await client.post(f"{TELEGRAM_API}/sendVideo", data=data, files=files)
+            await client.post(f"{TELEGRAM_API}/sendMessage", data = {"chat_id":chat_id, "text":"Downloading your Video..."})
+        background_tasks.add_task(process_video, chat_id, url)
 
-    else:
-        print("Unable to get the video metadata to download")
+    # ✅ Respond immediately to Telegram
     return {"ok": True}
