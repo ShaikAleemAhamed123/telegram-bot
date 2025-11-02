@@ -5,11 +5,18 @@ import os
 import traceback
 import subprocess
 from pathlib import Path
+from typing import Set, Dict, List, Union
 
 app = FastAPI()
 BOT_TOKEN = "8577277099:AAH-stXCaWNhNijfgIq0wfAsCcuyNlROBrQ"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 MAX_SIZE_MB = 2000  # Telegram allows up to 2GB with local API
+
+# Track processed updates to prevent duplicates
+processed_updates: Set[int] = set()
+
+# Cache uploaded videos: {youtube_url: file_id or [file_id1, file_id2, ...]}
+uploaded_videos: Dict[str, Union[str, List[str]]] = {}
 
 def split_video(file_path: str, chunk_size_mb: int = 45) -> list:
     """Split video into chunks using ffmpeg"""
@@ -44,13 +51,20 @@ def split_video(file_path: str, chunk_size_mb: int = 45) -> list:
         subprocess.run(cmd, check=True, capture_output=True)
         
         # Find all generated chunks
-        base_dir = os.path.dirname(file_path)
-        base_name = os.path.basename(file_path)
+        base_dir = os.path.dirname(file_path) or "."
+        base_name_without_ext = os.path.splitext(os.path.basename(file_path))[0]
+        
         chunks = sorted([
             os.path.join(base_dir, f) 
             for f in os.listdir(base_dir) 
-            if f.startswith(f"{base_name}_part")
+            if f.startswith(f"{base_name_without_ext}_part") and f.endswith(ext)
         ])
+        
+        print(f"🔍 Found {len(chunks)} chunks: {[os.path.basename(c) for c in chunks]}")
+        
+        if not chunks:
+            print(f"❌ No chunks found! Looking for pattern: {base_name_without_ext}_part*{ext}")
+            print(f"📁 Files in directory: {[f for f in os.listdir(base_dir) if 'part' in f.lower()]}")
         
         return chunks
         
@@ -58,10 +72,11 @@ def split_video(file_path: str, chunk_size_mb: int = 45) -> list:
         print(f"❌ Error splitting video: {e}")
         return [file_path]
 
-async def send_large_file(chat_id: int, file_path: str, caption: str = ""):
+async def send_large_file(chat_id: int, file_path: str, caption: str = "", url: str = None):
     """Send file using document endpoint - splits if needed"""
     try:
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        file_ids = []  # Store file_ids for caching
         
         # If file is too large for direct upload, split it
         if file_size_mb > 50:
@@ -72,26 +87,41 @@ async def send_large_file(chat_id: int, file_path: str, caption: str = ""):
             
             if len(chunks) == 1:  # Split failed, try direct upload anyway
                 print("⚠️ Split failed, attempting direct upload...")
-                return await upload_file(chat_id, file_path, caption)
+                file_id = await upload_file(chat_id, file_path, caption)
+                if file_id and url:
+                    uploaded_videos[url] = file_id
+                return file_id is not None
             
             # Upload each chunk
             for idx, chunk in enumerate(chunks, 1):
                 chunk_caption = f"{caption} - Part {idx}/{len(chunks)}" if len(chunks) > 1 else caption
                 await send_message(chat_id, f"📤 Uploading part {idx}/{len(chunks)}...")
                 
-                success = await upload_file(chat_id, chunk, chunk_caption)
+                file_id = await upload_file(chat_id, chunk, chunk_caption)
+                
+                if file_id:
+                    file_ids.append(file_id)
                 
                 # Clean up chunk immediately after upload
                 if os.path.exists(chunk) and chunk != file_path:
                     os.remove(chunk)
                     print(f"🗑️ Deleted chunk: {os.path.basename(chunk)}")
                 
-                if not success:
+                if not file_id:
                     return False
+            
+            # Cache all file_ids
+            if url and file_ids:
+                uploaded_videos[url] = file_ids
+                print(f"💾 Cached {len(file_ids)} file_ids for URL")
             
             return True
         else:
-            return await upload_file(chat_id, file_path, caption)
+            file_id = await upload_file(chat_id, file_path, caption)
+            if file_id and url:
+                uploaded_videos[url] = file_id
+                print(f"💾 Cached file_id for URL")
+            return file_id is not None
                     
     except Exception as e:
         print(f"❌ Error in send_large_file: {e}")
@@ -99,14 +129,14 @@ async def send_large_file(chat_id: int, file_path: str, caption: str = ""):
         return False
 
 async def upload_file(chat_id: int, file_path: str, caption: str = ""):
-    """Upload a single file to Telegram"""
+    """Upload a single file to Telegram and return file_id"""
     try:
         timeout = httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=30.0)
         
         async with httpx.AsyncClient(timeout=timeout) as client:
             with open(file_path, "rb") as file:
                 files = {"document": (os.path.basename(file_path), file, "application/octet-stream")}
-                data : dict = {"chat_id": chat_id}
+                data = {"chat_id": chat_id}
                 
                 if caption:
                     data["caption"] = caption[:1024]
@@ -116,25 +146,81 @@ async def upload_file(chat_id: int, file_path: str, caption: str = ""):
                     data=data,
                     files=files
                 )
-                file_upload_res = response.json()
                 
                 if response.status_code == 200:
+                    file_upload_res = response.json()
+                    file_id = file_upload_res.get("result", {}).get("document", {}).get("file_id")
                     print(f"✅ Sent file: {os.path.basename(file_path)}")
-                    return True
+                    return file_id
                 else:
                     print(f"❌ Upload failed ({response.status_code}): {response.text}")
-                    return False
+                    return None
                     
     except Exception as e:
         print(f"❌ Error uploading file: {e}")
         print(traceback.format_exc())
+        return None
+
+async def send_cached_video(chat_id: int, file_data: Union[str, List[str]], title: str) -> bool:
+    """Send video using cached file_id(s)"""
+    try:
+        timeout = httpx.Timeout(30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # Single file
+            if isinstance(file_data, str):
+                response = await client.post(
+                    f"{TELEGRAM_API}/sendDocument",
+                    json={
+                        "chat_id": chat_id,
+                        "document": file_data,
+                        "caption": f"♻️ {title}"
+                    }
+                )
+                return response.status_code == 200
+            
+            # Multiple parts
+            elif isinstance(file_data, list):
+                for idx, file_id in enumerate(file_data, 1):
+                    response = await client.post(
+                        f"{TELEGRAM_API}/sendDocument",
+                        json={
+                            "chat_id": chat_id,
+                            "document": file_id,
+                            "caption": f"♻️ {title} - Part {idx}/{len(file_data)}"
+                        }
+                    )
+                    if response.status_code != 200:
+                        print(f"❌ Failed to send part {idx}")
+                        return False
+                return True
+        
+        return False
+                
+    except Exception as e:
+        print(f"❌ Error sending cached video: {e}")
         return False
 
 async def process_video(chat_id: int, url: str):
     file_path = None
-    chunks = []
     
     try:
+        # Check if video was already uploaded
+        if url in uploaded_videos:
+            yt = YouTube(url, use_oauth=True, allow_oauth_cache=True)
+            await send_message(chat_id, f"♻️ Found '{yt.title}' in cache! Sending instantly...")
+            
+            success = await send_cached_video(chat_id, uploaded_videos[url], yt.title)
+            
+            if success:
+                await send_message(chat_id, "✅ Video sent from cache (no download needed)!")
+            else:
+                await send_message(chat_id, "❌ Cache send failed, will re-download...")
+                # Remove from cache and try fresh download
+                del uploaded_videos[url]
+            
+            if success:
+                return
+        
         yt = YouTube(url, use_oauth=True, allow_oauth_cache=True)
         print(f"🎬 Title: {yt.title}")
         
@@ -145,6 +231,7 @@ async def process_video(chat_id: int, url: str):
             return
         
         # Download video
+        await send_message(chat_id, "⏳ Downloading video...")
         file_path = ys.download()
         print(f"✅ Downloaded: {file_path}")
         
@@ -168,6 +255,13 @@ async def process_video(chat_id: int, url: str):
                     print(f"📨 Response: {response.status_code}")
                     
                     if response.status_code == 200:
+                        # Cache the file_id
+                        result = response.json()
+                        file_id = result.get("result", {}).get("video", {}).get("file_id")
+                        if file_id:
+                            uploaded_videos[url] = file_id
+                            print(f"💾 Cached video file_id")
+                        
                         await send_message(chat_id, "✅ Video uploaded successfully!")
                     else:
                         await send_message(chat_id, f"❌ Upload failed: {response.status_code}")
@@ -175,7 +269,7 @@ async def process_video(chat_id: int, url: str):
         else:
             # Files > 50MB - will be automatically split if needed
             await send_message(chat_id, f"📤 Uploading large file ({file_size_mb:.1f} MB)...")
-            success = await send_large_file(chat_id, file_path, yt.title)
+            success = await send_large_file(chat_id, file_path, yt.title, url)
             
             if success:
                 await send_message(chat_id, "✅ All parts uploaded successfully!")
@@ -214,7 +308,21 @@ async def send_message(chat_id: int, text: str):
 async def download_video(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
-        print("📩 Update received:", data)
+        
+        # Get update_id to prevent duplicate processing
+        update_id = data.get("update_id")
+        if update_id in processed_updates:
+            print(f"⚠️ Duplicate update {update_id} - skipping")
+            return {"ok": True, "message": "Already processing"}
+        
+        print(f"📩 Update received: {data}")
+        
+        # Mark as processed
+        if update_id:
+            processed_updates.add(update_id)
+            # Keep only last 1000 update IDs to prevent memory growth
+            if len(processed_updates) > 1000:
+                processed_updates.pop()
         
         message = data.get("message", {})
         chat_id = message.get("chat", {}).get("id")
@@ -224,11 +332,10 @@ async def download_video(request: Request, background_tasks: BackgroundTasks):
             return {"ok": False, "error": "Missing chat_id or url"}
         
         # Validate URL
-        if not url.startswith(("http://", "https://")):
+        if not url.startswith(("http://", "https://")) or ("youtube.com" not in url.lower() and "youtu.be" not in url.lower()):
             await send_message(chat_id, "❌ Please send a valid YouTube URL")
             return {"ok": True}
         
-        await send_message(chat_id, "⏳ Downloading your video...")
         background_tasks.add_task(process_video, chat_id, url)
         
         return {"ok": True}
