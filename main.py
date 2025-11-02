@@ -6,10 +6,13 @@ import subprocess
 import logging
 from typing import Set, Dict, List, Union, Optional
 import json
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 app = FastAPI()
-BOT_TOKEN = "8577277099:AAH-stXCaWNhNijfgIq0wfAsCcuyNlROBrQ"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 MAX_SIZE_MB = 2000  # Telegram allows up to 2GB with local API
 CACHE_FILE = "cache.json"
@@ -22,6 +25,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# Track processed updates to prevent duplicates
+processed_updates: Set[int] = set()
+
+# Cache uploaded videos: {youtube_url: file_id or [file_id1, file_id2, ...]}
+uploaded_videos: Dict[str, Dict[str, List[str]]] = {}
 
 def load_cache():
     """Load cache from JSON file"""
@@ -42,11 +51,6 @@ def load_cache():
         uploaded_videos = {}
 
 
-# Track processed updates to prevent duplicates
-processed_updates: Set[int] = set()
-
-# Cache uploaded videos: {youtube_url: file_id or [file_id1, file_id2, ...]}
-uploaded_videos: Dict[str, Dict[str, List[str]]] = {}
 
 # Load cache on startup
 load_cache()
@@ -159,7 +163,7 @@ async def send_large_file(chat_id: int, file_path: str, caption: str = "", url: 
                 logger.warning("Video splitting failed or returned single chunk. Attempting direct upload.")
                 file_id = await upload_file(chat_id, file_path, caption)
                 if file_id and url:
-                    uploaded_videos[chat_id_str][url] = file_id
+                    uploaded_videos[chat_id_str][url] = [file_id]
                     await persist_cache()
                     logger.info(f"Cached file_id for URL: {url[:50]}...")
                 return file_id is not None
@@ -201,7 +205,7 @@ async def send_large_file(chat_id: int, file_path: str, caption: str = "", url: 
             logger.info(f"File size within 50MB limit. Uploading directly.")
             file_id = await upload_file(chat_id, file_path, caption)
             if file_id and url:
-                uploaded_videos[chat_id_str][url] = file_id
+                uploaded_videos[chat_id_str][url] = [file_id]
                 await persist_cache()
                 logger.info(f"Cached file_id for URL: {url[:50]}...")
             return file_id is not None
@@ -378,7 +382,7 @@ async def process_video(chat_id: int, url: str):
                         result = response.json()
                         file_id = result.get("result", {}).get("video", {}).get("file_id")
                         if file_id:
-                            uploaded_videos[chat_id_str][url] = file_id
+                            uploaded_videos[chat_id_str][url] = [file_id]
                             await persist_cache()
                             logger.info(f"Video file_id cached for future requests - Chat: {chat_id}, URL: {url[:50]}...")
                         
