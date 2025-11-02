@@ -6,7 +6,7 @@ import traceback
 import subprocess
 import logging
 from pathlib import Path
-from typing import Set, Dict, List, Union
+from typing import Set, Dict, List, Union, Optional
 import json
 
 
@@ -48,7 +48,7 @@ def load_cache():
 processed_updates: Set[int] = set()
 
 # Cache uploaded videos: {youtube_url: file_id or [file_id1, file_id2, ...]}
-uploaded_videos: Dict[str, Union[str, List[str]]] = {}
+uploaded_videos: Dict[str, Dict[str, List[str]]] = {}
 
 # Load cache on startup
 load_cache()
@@ -137,7 +137,7 @@ def split_video(file_path: str, chunk_size_mb: int = 45) -> list:
         logger.error(f"Error splitting video: {e}", exc_info=True)
         return [file_path]
 
-async def send_large_file(chat_id: int, file_path: str, caption: str = "", url: str = None):
+async def send_large_file(chat_id: int, file_path: str, caption: str = "", url: Optional[str] = None):
     """Send file using document endpoint - splits if needed"""
     try:
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
@@ -223,7 +223,7 @@ async def upload_file(chat_id: int, file_path: str, caption: str = ""):
         async with httpx.AsyncClient(timeout=timeout) as client:
             with open(file_path, "rb") as file:
                 files = {"document": (os.path.basename(file_path), file, "application/octet-stream")}
-                data = {"chat_id": chat_id}
+                data = {"chat_id": str(chat_id)}
                 
                 if caption:
                     data["caption"] = caption[:1024]
