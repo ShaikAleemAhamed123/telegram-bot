@@ -2,10 +2,8 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from pytubefix import YouTube
 import httpx
 import os
-import traceback
 import subprocess
 import logging
-from pathlib import Path
 from typing import Set, Dict, List, Union, Optional
 import json
 
