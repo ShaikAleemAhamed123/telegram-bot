@@ -338,6 +338,15 @@ wheels = [
 ]
 
 [[package]]
+name = "hachoir"
+version = "3.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/31/e5/3a7d611dc87aab2c088be040f5da2f6937e308044983848e648d97ef388b/hachoir-3.3.0.tar.gz", hash = "sha256:fd7679f649c17ee45ab2ba5eacddc702c667ea5200c0a1fd063d4615fa7270d2", size = 7111887, upload-time = "2023-12-12T10:59:30.986Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/96/9570e6604114e9b2b2e1d90a89d01d10646b9cb6f54bba78f6de5fbbceb1/hachoir-3.3.0-py3-none-any.whl", hash = "sha256:9f721af67867d933383398b9605bc388db25f55dde1034d2bfde91f05e5d9910", size = 650439, upload-time = "2023-12-12T10:59:28.091Z" },
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -654,22 +663,41 @@ source = { virtual = "." }
 dependencies = [
     { name = "aiofiles" },
     { name = "fastapi", extra = ["standard"] },
+    { name = "hachoir" },
     { name = "httpx" },
     { name = "python-telegram-bot" },
     { name = "pytube" },
     { name = "pytube3" },
     { name = "pytubefix" },
+    { name = "telethon" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiofiles", specifier = ">=25.1.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.120.4" },
+    { name = "hachoir", specifier = ">=3.3.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "python-telegram-bot", specifier = "==22.5" },
     { name = "pytube", specifier = ">=15.0.0" },
     { name = "pytube3", specifier = ">=9.6.4" },
     { name = "pytubefix", specifier = ">=10.1.1" },
+    { name = "telethon", specifier = ">=1.41.2" },
+]
+
+[[package]]
+name = "pyaes"
+version = "1.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/44/66/2c17bae31c906613795711fc78045c285048168919ace2220daa372c7d72/pyaes-1.6.1.tar.gz", hash = "sha256:02c1b1405c38d3c370b085fb952dd8bea3fadcee6411ad99f312cc129c536d8f", size = 28536, upload-time = "2017-09-20T21:17:54.23Z" }
+
+[[package]]
+name = "pyasn1"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ba/e9/01f1a64245b89f039897cb0130016d79f77d52669aae6ee7b159a6c4c018/pyasn1-0.6.1.tar.gz", hash = "sha256:6f580d2bdd84365380830acf45550f2511469f673cb4a5ae3857a3170128b034", size = 145322, upload-time = "2024-09-10T22:41:42.55Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/f1/d6a797abb14f6283c0ddff96bbdd46937f64122b8c925cab503dd37f8214/pyasn1-0.6.1-py3-none-any.whl", hash = "sha256:0d632f46f2ba09143da3a8afe9e33fb6f92fa2320ab7e886e2d0f7672af84629", size = 83135, upload-time = "2024-09-11T16:00:36.122Z" },
 ]
 
 [[package]]
@@ -915,6 +943,18 @@ wheels = [
 ]
 
 [[package]]
+name = "rsa"
+version = "4.9.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyasn1" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/8a/22b7beea3ee0d44b1916c0c1cb0ee3af23b700b6da9f04991899d0c555d4/rsa-4.9.1.tar.gz", hash = "sha256:e7bdbfdb5497da4c07dfd35530e1a902659db6ff241e39d9953cad06ebd0ae75", size = 29034, upload-time = "2025-04-16T09:51:18.218Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/8d/0133e4eb4beed9e425d9a98ed6e081a55d195481b7632472be1af08d2f6b/rsa-4.9.1-py3-none-any.whl", hash = "sha256:68635866661c6836b8d39430f97a996acbd61bfa49406748ea243539fe239762", size = 34696, upload-time = "2025-04-16T09:51:17.142Z" },
+]
+
+[[package]]
 name = "sentry-sdk"
 version = "2.43.0"
 source = { registry = "https://pypi.org/simple" }
@@ -955,6 +995,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1b/3f/507c21db33b66fb027a332f2cb3abbbe924cc3a79ced12f01ed8645955c9/starlette-0.49.1.tar.gz", hash = "sha256:481a43b71e24ed8c43b11ea02f5353d77840e01480881b8cb5a26b8cae64a8cb", size = 2654703, upload-time = "2025-10-28T17:34:10.928Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/51/da/545b75d420bb23b5d494b0517757b351963e974e79933f01e05c929f20a6/starlette-0.49.1-py3-none-any.whl", hash = "sha256:d92ce9f07e4a3caa3ac13a79523bd18e3bc0042bb8ff2d759a8e7dd0e1859875", size = 74175, upload-time = "2025-10-28T17:34:09.13Z" },
+]
+
+[[package]]
+name = "telethon"
+version = "1.41.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyaes" },
+    { name = "rsa" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/86/6a/3fc30b39eac0a8c770418c0f393d3ff040b9205938a1492d60f08934e97a/telethon-1.41.2.tar.gz", hash = "sha256:300a3441df62668378626b46cafda346573e9ac296367182510756334d2bdc5e", size = 669173, upload-time = "2025-09-04T19:08:02.026Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/78/e0/2fb26c432ee4259a6d4ab427196b84a2b0c81db232337b02cf2a09df1896/telethon-1.41.2-py3-none-any.whl", hash = "sha256:28b6b1023a0753a32039e6d1fda4b63cac138ce894cd5cbcac1d5ddd2f8426d8", size = 744889, upload-time = "2025-09-04T19:08:00.181Z" },
 ]
 
 [[package]]
