@@ -67,7 +67,7 @@ async def process_video(chat_id: int, url: str):
         await send_message(chat_id, f"📤 Uploading to Telegram... ({file_size / (1024*1024):.2f} MB)")
         
         client = TelegramClient("session", API_ID, API_HASH)
-        await client.start(BOT_TOKEN=BOT_TOKEN)
+        await client.start(bot_token=BOT_TOKEN)
         
         try:
             message = await client.send_file(
