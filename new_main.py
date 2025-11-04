@@ -14,11 +14,12 @@ app = FastAPI()
 BOT_TOKEN = os.environ.get("BOT_TOKEN","")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CACHE_FILE = "cache.json"
-uploaded_videos: dict[str, str] = {}
-
 # Telethon credentials
 API_ID = int(os.environ.get("API_ID","0"))
 API_HASH = os.environ.get("API_HASH","")
+
+uploaded_videos: dict[str, str] = {}
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ def load_cache():
 # Load cache on startup
 load_cache()
 
-async def persist_cache():
+def persist_cache():
     """Save cache to JSON file"""
     try:
         with open(CACHE_FILE, "w") as cache:
@@ -56,7 +57,7 @@ async def persist_cache():
 
 
 @app.post("/bot")
-async def download_video(request: Request, background_tasks: BackgroundTasks):
+async def process_video(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
         message = data.get("message", {})
@@ -67,20 +68,21 @@ async def download_video(request: Request, background_tasks: BackgroundTasks):
             await send_message(chat_id, "❌ Please send a valid YouTube URL")
             return {"ok": True}
         
-        background_tasks.add_task(process_video, chat_id, url)
+        background_tasks.add_task(download_video, chat_id, url)
         return {"ok": True}
         
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
+        await send_message(chat_id, "❌ Error While Preparing Video Download")
+        logger.error(f"Error while Preparing Video Download : {e}", exc_info=True)
         return {"ok": False}
 
 
-async def process_video(chat_id: int, url: str):
+async def download_video(chat_id: int, url: str):
     file_path = None
     try:
         if url in uploaded_videos:
-            await send_message(chat_id, "Sending Cached Video")
-            await send_video(url=url,file_path=uploaded_videos.get(url),chat_id=chat_id)
+            await send_message(chat_id, "Sending Cached Video...")
+            await send_video(url=url,file_path=uploaded_videos.get(url),chat_id=chat_id) #pyright: ignore
         else:
             await send_message(chat_id, "⏳ Downloading video...")
             
@@ -97,8 +99,8 @@ async def process_video(chat_id: int, url: str):
                 logger.error("cannot find the path of the downloaded file")
         
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        await send_message(chat_id, f"❌ Error: {str(e)}")
+        logger.error(f"Error while Downloading Video : {e}", exc_info=True)
+        await send_message(chat_id,"❌ Error while Downloading Video")
     finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
@@ -107,23 +109,29 @@ async def send_video(url:str, file_path: str, chat_id: int):
     client = None
     try:
         client = TelegramClient("session", API_ID, API_HASH)
-        await client.start(bot_token=BOT_TOKEN)
+        await client.start(bot_token=BOT_TOKEN) #pyright: ignore
+
+        logger.info(f"Sending Video...")
         message = await client.send_file(
             entity=chat_id,
             file=file_path,
+            force_document=False,
+            supports_streaming=True
         )
+        await send_message(chat_id, "Thank You for availing the bot service...")
         logger.info(message)
-        logger.info(f"Video sent successfully. Message ID: {message.id}")
+        logger.info(f"Video sent successfully.")
 
-        document = message.media.document
+        document = message.media.document #pyright: ignore
         file_id = pack_bot_file_id(document)
-        uploaded_videos[url]=file_id
-        await persist_cache()
+        uploaded_videos[url]=file_id #pyright: ignore
+        persist_cache()
     except Exception as e:
-        logger.exception("Unable to initiate telegram client")
+        logger.exception("Error Initiating Telegram Client")
     finally:
         if client:
-            await client.disconnect()
+            await client.disconnect() #pyright: ignore
+            logger.info(client.is_connected())
 
             
 async def send_message(chat_id: int, text: str):
@@ -131,5 +139,5 @@ async def send_message(chat_id: int, text: str):
         await client.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": chat_id, "text": text})
 
 @app.get("/")
-async def root():
+def root():
     return {"status": "Bot is running"}
