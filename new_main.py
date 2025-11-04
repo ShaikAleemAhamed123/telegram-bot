@@ -84,7 +84,7 @@ async def download_video(chat_id: int, url: str):
             await send_message(chat_id, "Sending Cached Video...")
             await send_video(url=url,file_path=uploaded_videos.get(url),chat_id=chat_id) #pyright: ignore
         else:
-            await send_message(chat_id, "⏳ Downloading video...")
+            logger.info("⏳ Downloading video to Local")
             
             yt = YouTube(url, use_oauth=True, allow_oauth_cache=True)
             stream = yt.streams.get_highest_resolution()
@@ -100,23 +100,36 @@ async def download_video(chat_id: int, url: str):
         
     except Exception as e:
         logger.error(f"Error while Downloading Video : {e}", exc_info=True)
-        await send_message(chat_id,"❌ Error while Downloading Video")
+        await send_message(chat_id,"❌ Error while fetching Video")
     finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
 
 async def send_video(url:str, file_path: str, chat_id: int):
     client = None
+
+
     try:
         client = TelegramClient("session", API_ID, API_HASH)
         await client.start(bot_token=BOT_TOKEN) #pyright: ignore
-
+        
         logger.info(f"Sending Video...")
+        message_response = await send_message(chat_id=chat_id, text="Downloading video for you...")
+        progress_message_id = message_response.json().get("result",{}).get("message_id")
+
+        def progress_callback(completed, total):
+            progress_fraction = completed/total
+            progress_percent = round(progress_fraction * 100, 2)
+            progress_message = f"📥 Downloading... {progress_percent:.2f}%"
+            edit_message(chat_id=chat_id, message_id=progress_message_id, text=progress_message)
+
         message = await client.send_file(
             entity=chat_id,
             file=file_path,
-            force_document=False,
-            supports_streaming=True
+            force_document=True,
+            supports_streaming=True,
+            mime_type="video/mp4", 
+            progress_callback=progress_callback
         )
         await send_message(chat_id, "Thank You for availing the bot service...")
         logger.info(message)
@@ -131,12 +144,17 @@ async def send_video(url:str, file_path: str, chat_id: int):
     finally:
         if client:
             await client.disconnect() #pyright: ignore
-            logger.info(client.is_connected())
 
             
 async def send_message(chat_id: int, text: str):
     async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": chat_id, "text": text})
+        response = await client.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": chat_id, "text": text})
+        return response
+
+def edit_message(chat_id: int, message_id:int, text: str):
+    with httpx.Client() as client:
+        client.post(f"{TELEGRAM_API}/editMessageText", data={"chat_id": chat_id,"message_id":message_id, "text": text})
+
 
 @app.get("/")
 def root():
