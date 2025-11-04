@@ -9,12 +9,12 @@ from telethon import TelegramClient
 load_dotenv()
 app = FastAPI()
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("BOT_TOKEN","")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # Telethon credentials
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
+API_ID = int(os.environ.get("API_ID","0"))
+API_HASH = os.environ.get("API_HASH","")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,10 +49,19 @@ async def process_video(chat_id: int, url: str):
         await send_message(chat_id, "⏳ Downloading video...")
         
         yt = YouTube(url, use_oauth=True, allow_oauth_cache=True)
-        file_path = yt.streams.get_highest_resolution().download()
-        
-        file_size = os.path.getsize(file_path)
-        logger.info(f"File downloaded: {file_path}, Size: {file_size / (1024*1024):.2f} MB")
+        stream = yt.streams.get_highest_resolution()
+        if stream:
+            file_path = stream.download()
+        else:
+            logger.error("No stream found for the video")
+            return
+
+        if file_path: 
+            file_size = os.path.getsize(file_path)
+            logger.info(f"File downloaded: {file_path}, Size: {file_size / (1024*1024):.2f} MB")
+        else:
+            logger.error("cannot find the path of the downloaded file")
+            return
         
         # Extract video metadata
         parser = createParser(file_path)
@@ -67,7 +76,7 @@ async def process_video(chat_id: int, url: str):
         await send_message(chat_id, f"📤 Uploading to Telegram... ({file_size / (1024*1024):.2f} MB)")
         
         client = TelegramClient("session", API_ID, API_HASH)
-        await client.start(bot_token=BOT_TOKEN)
+        client.start(bot_token=BOT_TOKEN)
         
         try:
             message = await client.send_file(
@@ -82,12 +91,11 @@ async def process_video(chat_id: int, url: str):
                         supports_streaming=True
                     )
                 ],
-                thumb=None  # Optional: add thumbnail later
             )
-            logger.info(f"Video sent successfully. Message ID: {message.id}")
+            logger.info(f"Video sent successfully. Message ID: {message[0].id}")
             
         finally:
-            await client.disconnect()
+            client.disconnect()
             
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
